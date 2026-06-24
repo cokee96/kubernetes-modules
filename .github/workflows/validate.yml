@@ -1,0 +1,57 @@
+name: Validate Kubernetes modules
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module:
+          - modules/k8s-namespace
+          - modules/k8s-deployment
+          - modules/k8s-service
+          - modules/k8s-configmap
+          - modules/k8s-secret
+          - modules/k8s-ingress
+          - modules/k8s-serviceaccount
+          - modules/k8s-rbac
+          - modules/k8s-hpa
+          - modules/k8s-pvc
+          - modules/k8s-statefulset
+          - modules/k8s-cronjob
+          - modules/k8s-networkpolicy
+          - modules/k8s-helm-release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.8"
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ matrix.module }}
+
+      # -backend=false skips backend init; validate doesn't connect to the cluster
+      - name: terraform init
+        run: terraform init -backend=false
+        working-directory: ${{ matrix.module }}
+
+      - name: terraform validate
+        run: terraform validate
+        working-directory: ${{ matrix.module }}
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint
+        working-directory: ${{ matrix.module }}

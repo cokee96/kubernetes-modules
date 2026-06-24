@@ -1,0 +1,112 @@
+---
+# deploy.yml — Deploy a containerised application to on-premise Linux servers.
+#
+# Required extra-vars (all passed by the CI pipeline):
+#   image       — full image reference, e.g. registry.company.com/myapp:abc123
+#   app_name    — container/service name
+#   env         — environment name (dev / pre / prod)
+#
+# Optional extra-vars:
+#   registry_host     — registry hostname (for docker login)
+#   registry_user     — registry username
+#   registry_password — registry password
+#   container_port    — port exposed by the container (default: 8080)
+#   host_port         — port published on the host (default: 80)
+#   health_endpoint   — health check path (default: /healthz)
+
+- name: Deploy application
+  hosts: "{{ env }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    container_port: 8080
+    host_port: 80
+    health_endpoint: /healthz
+    restart_policy: unless-stopped
+
+  tasks:
+    # ─────────────────────────────────────────────────────────
+    # 1. Ensure Docker is installed and running
+    # ─────────────────────────────────────────────────────────
+    - name: Ensure docker is installed
+      ansible.builtin.package:
+        name: docker.io
+        state: present
+
+    - name: Ensure docker service is running
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    # ─────────────────────────────────────────────────────────
+    # 2. Log in to the container registry (if credentials given)
+    # ─────────────────────────────────────────────────────────
+    - name: Login to container registry
+      community.docker.docker_login:
+        registry_url: "{{ registry_host | default(omit) }}"
+        username: "{{ registry_user }}"
+        password: "{{ registry_password }}"
+      when: registry_user is defined and registry_password is defined
+      no_log: true
+      tags: [login]
+
+    # ─────────────────────────────────────────────────────────
+    # 3. Pull new image
+    # ─────────────────────────────────────────────────────────
+    - name: Pull image
+      community.docker.docker_image:
+        name: "{{ image }}"
+        source: pull
+        force_source: true
+      tags: [pull, update-image]
+
+    # ─────────────────────────────────────────────────────────
+    # 4. Stop old container (graceful — 30 s timeout)
+    # ─────────────────────────────────────────────────────────
+    - name: Stop existing container
+      community.docker.docker_container:
+        name: "{{ app_name }}"
+        state: stopped
+        stop_timeout: 30
+      ignore_errors: true
+      tags: [restart, update-image]
+
+    # ─────────────────────────────────────────────────────────
+    # 5. Start new container
+    # ─────────────────────────────────────────────────────────
+    - name: Start container
+      community.docker.docker_container:
+        name: "{{ app_name }}"
+        image: "{{ image }}"
+        state: started
+        restart_policy: "{{ restart_policy }}"
+        ports:
+          - "{{ host_port }}:{{ container_port }}"
+        env:
+          APP_ENV: "{{ env }}"
+        labels:
+          app: "{{ app_name }}"
+          env: "{{ env }}"
+          image: "{{ image }}"
+      tags: [restart, update-image]
+
+    # ─────────────────────────────────────────────────────────
+    # 6. Wait for health check
+    # ─────────────────────────────────────────────────────────
+    - name: Wait for application health check
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:{{ host_port }}{{ health_endpoint }}"
+        method: GET
+        status_code: 200
+      register: health_result
+      retries: 12
+      delay: 5
+      until: health_result.status == 200
+      tags: [verify]
+
+    - name: Health check passed
+      ansible.builtin.debug:
+        msg: "Health check OK: {{ health_result.status }} — {{ image }}"
+      tags: [verify]

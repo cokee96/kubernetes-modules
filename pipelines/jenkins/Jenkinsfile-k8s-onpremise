@@ -1,0 +1,275 @@
+// Kubernetes On-Premise Deploy Pipeline
+//
+// Builds a Docker image, pushes it to an on-premise registry (Harbor, Nexus, etc.),
+// then deploys to an on-premise Kubernetes cluster using a kubeconfig stored
+// as a Jenkins credential.
+//
+// Required Jenkins credentials:
+//   REGISTRY_HOST      — Secret text: hostname of the on-premise registry
+//   REGISTRY_USER      — Secret text: registry username
+//   REGISTRY_PASSWORD  — Secret text: registry password
+//   APP_NAME           — Secret text: application name
+//   KUBECONFIG_DEV     — Secret file: kubeconfig for the dev cluster
+//   KUBECONFIG_PRE     — Secret file: kubeconfig for the pre cluster
+//   KUBECONFIG_PROD    — Secret file: kubeconfig for the prod cluster
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'pre', 'prod'],
+            description: 'Target environment'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            description: 'Image tag to deploy. Leave empty to use build number.'
+        )
+    }
+
+    environment {
+        REGISTRY_HOST     = credentials('REGISTRY_HOST')
+        REGISTRY_USER     = credentials('REGISTRY_USER')
+        REGISTRY_PASSWORD = credentials('REGISTRY_PASSWORD')
+        APP_NAME          = credentials('APP_NAME')
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+        ansiColor('xterm')
+        timestamps()
+    }
+
+    stages {
+        // ─────────────────────────────────────────────────────
+        // STAGE 1 — Resolve image tag
+        // ─────────────────────────────────────────────────────
+        stage('Resolve Tag') {
+            steps {
+                script {
+                    env.EFFECTIVE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
+                    env.NAMESPACE     = "${env.APP_NAME}-${params.ENVIRONMENT}"
+                    env.FULL_IMAGE    = "${env.REGISTRY_HOST}/${env.APP_NAME}:${env.EFFECTIVE_TAG}"
+
+                    echo "Image     : ${env.FULL_IMAGE}"
+                    echo "Namespace : ${env.NAMESPACE}"
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 2 — Build Docker image
+        // ─────────────────────────────────────────────────────
+        stage('Build') {
+            steps {
+                script {
+                    docker.build("${env.FULL_IMAGE}", '.')
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 3 — Push to on-premise registry
+        // ─────────────────────────────────────────────────────
+        stage('Push') {
+            steps {
+                script {
+                    docker.withRegistry("https://${env.REGISTRY_HOST}", 'onpremise-registry-credential') {
+                        def img = docker.image(env.FULL_IMAGE)
+                        img.push(env.EFFECTIVE_TAG)
+                        img.push('latest')
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 4 — Plan (kubectl diff)
+        // Shows what will change in the cluster before deploying.
+        // ─────────────────────────────────────────────────────
+        stage('Plan') {
+            steps {
+                script {
+                    // Load the kubeconfig file for the target environment
+                    def kubeconfigCredId = "KUBECONFIG_${params.ENVIRONMENT.toUpperCase()}"
+
+                    withCredentials([file(credentialsId: kubeconfigCredId, variable: 'KUBECONFIG_FILE')]) {
+                        env.DIFF_OUTPUT = sh(
+                            script: """
+                                export KUBECONFIG="\$KUBECONFIG_FILE"
+                                kubectl cluster-info --request-timeout=10s
+
+                                kubectl diff -f - <<EOF || true
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${env.APP_NAME}
+  namespace: ${env.NAMESPACE}
+spec:
+  template:
+    spec:
+      containers:
+      - name: ${env.APP_NAME}
+        image: ${env.FULL_IMAGE}
+EOF
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        echo "=== kubectl diff ===\n${env.DIFF_OUTPUT ?: 'No diff output — image tag is the only change.'}"
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 5 — Approval
+        // Shows the diff, waits for a human to approve.
+        // In prod only admin and team-leads can approve.
+        // ─────────────────────────────────────────────────────
+        stage('Approval') {
+            steps {
+                script {
+                    def maxChars = 4000
+                    def diff = env.DIFF_OUTPUT ?: 'No diff available.'
+                    def displayDiff = diff.length() > maxChars
+                        ? diff.substring(diff.length() - maxChars)
+                        : diff
+
+                    def msg = """
+╔══════════════════════════════════════════════════════════════╗
+║  ENVIRONMENT : ${params.ENVIRONMENT.toUpperCase()}
+║  IMAGE       : ${env.FULL_IMAGE}
+║  NAMESPACE   : ${env.NAMESPACE}
+╚══════════════════════════════════════════════════════════════╝
+
+=== kubectl diff ===
+${displayDiff}
+
+Deploy ${env.FULL_IMAGE} to ${params.ENVIRONMENT}?
+                    """
+
+                    def approvers = params.ENVIRONMENT == 'prod' ? 'admin,team-leads' : ''
+
+                    timeout(time: 30, unit: 'MINUTES') {
+                        input(
+                            message: msg,
+                            ok: "Deploy to ${params.ENVIRONMENT}",
+                            submitter: approvers
+                        )
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 6 — Deploy
+        // ─────────────────────────────────────────────────────
+        stage('Deploy') {
+            steps {
+                script {
+                    def kubeconfigCredId = "KUBECONFIG_${params.ENVIRONMENT.toUpperCase()}"
+
+                    withCredentials([file(credentialsId: kubeconfigCredId, variable: 'KUBECONFIG_FILE')]) {
+                        sh """
+                            export KUBECONFIG="\$KUBECONFIG_FILE"
+
+                            kubectl set image deployment/${env.APP_NAME} \
+                              ${env.APP_NAME}=${env.FULL_IMAGE} \
+                              -n ${env.NAMESPACE}
+
+                            kubectl rollout status deployment/${env.APP_NAME} \
+                              -n ${env.NAMESPACE} \
+                              --timeout=5m
+
+                            echo "=== Pods after deploy ==="
+                            kubectl get pods -n ${env.NAMESPACE} -o wide
+                        """
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // STAGE 7 — Smoke test
+        // ─────────────────────────────────────────────────────
+        stage('Verify') {
+            steps {
+                script {
+                    def kubeconfigCredId = "KUBECONFIG_${params.ENVIRONMENT.toUpperCase()}"
+
+                    withCredentials([file(credentialsId: kubeconfigCredId, variable: 'KUBECONFIG_FILE')]) {
+                        def clusterIP = sh(
+                            script: """
+                                export KUBECONFIG="\$KUBECONFIG_FILE"
+                                kubectl get svc ${env.APP_NAME} -n ${env.NAMESPACE} \
+                                  -o jsonpath='{.spec.clusterIP}'
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        def httpPort = sh(
+                            script: """
+                                export KUBECONFIG="\$KUBECONFIG_FILE"
+                                kubectl get svc ${env.APP_NAME} -n ${env.NAMESPACE} \
+                                  -o jsonpath='{.spec.ports[0].port}'
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        sh """
+                            export KUBECONFIG="\$KUBECONFIG_FILE"
+                            echo "Smoke test: http://${clusterIP}:${httpPort}/healthz"
+                            kubectl run smoke-${env.BUILD_NUMBER} \
+                              --image=curlimages/curl:latest \
+                              --restart=Never \
+                              --rm \
+                              -n ${env.NAMESPACE} \
+                              -- curl -sf --retry 5 --retry-delay 3 \
+                                 http://${clusterIP}:${httpPort}/healthz
+                        """
+                    }
+
+                    echo "Smoke test passed."
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployment of ${env.FULL_IMAGE} to ${params.ENVIRONMENT} completed."
+        }
+
+        failure {
+            script {
+                echo "Deployment failed — attempting rollback..."
+                def kubeconfigCredId = "KUBECONFIG_${params.ENVIRONMENT.toUpperCase()}"
+
+                try {
+                    withCredentials([file(credentialsId: kubeconfigCredId, variable: 'KUBECONFIG_FILE')]) {
+                        sh """
+                            export KUBECONFIG="\$KUBECONFIG_FILE"
+
+                            kubectl rollout undo deployment/${env.APP_NAME} \
+                              -n ${env.NAMESPACE}
+
+                            kubectl rollout status deployment/${env.APP_NAME} \
+                              -n ${env.NAMESPACE} \
+                              --timeout=3m
+
+                            echo "Rollback complete. Current pods:"
+                            kubectl get pods -n ${env.NAMESPACE} -o wide
+                        """
+                    }
+                    echo "Rollback successful."
+                } catch (err) {
+                    echo "Rollback also failed: ${err}"
+                }
+            }
+        }
+    }
+}

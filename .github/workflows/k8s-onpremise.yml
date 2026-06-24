@@ -1,0 +1,194 @@
+name: Kubernetes On-Premise Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, pre, prod]
+      image_tag:
+        description: "Image tag to deploy (default: git SHA)"
+        required: false
+        type: string
+
+concurrency:
+  group: k8s-onpremise-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY:   ${{ vars.REGISTRY_HOST }}       # e.g. harbor.internal:5000 or registry.company.com
+  IMAGE_NAME: ${{ vars.APP_NAME }}
+  APP_NAME:   ${{ vars.APP_NAME }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 1 — Build and push Docker image to the on-premise registry
+# Supports Harbor, Nexus, plain Docker Registry v2 — any registry that accepts
+# docker login with user/password.
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  build:
+    name: "Build & Push → ${{ github.event.inputs.environment }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: set_tag
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          [ -z "$TAG" ] && TAG="${{ github.sha }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Image tag: $TAG"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-
+
+      # Login to on-premise registry (Harbor, Nexus, plain registry v2, etc.)
+      # Secrets: REGISTRY_USER, REGISTRY_PASSWORD
+      - name: Login to on-premise registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.set_tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to:   type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      - name: Move cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Deploy to on-premise Kubernetes cluster
+  #
+  # Authentication: kubeconfig stored as a GitHub secret (base64-encoded).
+  # To generate: base64 -w0 ~/.kube/config
+  #
+  # Secret needed: KUBECONFIG_DEV / KUBECONFIG_PRE / KUBECONFIG_PROD
+  # Each is a base64-encoded kubeconfig for that cluster. Keeping them separate
+  # prevents accidental cross-environment deploys.
+  #
+  # Approval gate:
+  #   Settings → Environments → dev / pre / prod → Required reviewers
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: "Deploy → ${{ github.event.inputs.environment }}"
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    env:
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+      NAMESPACE: ${{ vars.APP_NAME }}-${{ github.event.inputs.environment }}
+      FULL_IMAGE: ${{ vars.REGISTRY_HOST }}/${{ vars.APP_NAME }}:${{ needs.build.outputs.image_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Decode the environment-specific kubeconfig into a temp file.
+      # The file is scoped to this step's lifetime and removed after the job.
+      - name: Configure kubectl
+        run: |
+          mkdir -p "$HOME/.kube"
+          ENV_UPPER=$(echo "${{ github.event.inputs.environment }}" | tr '[:lower:]' '[:upper:]')
+          SECRET_NAME="KUBECONFIG_${ENV_UPPER}"
+
+          # Pull the right secret by name
+          case "${{ github.event.inputs.environment }}" in
+            dev)  echo "${{ secrets.KUBECONFIG_DEV }}"  | base64 -d > "$HOME/.kube/config" ;;
+            pre)  echo "${{ secrets.KUBECONFIG_PRE }}"  | base64 -d > "$HOME/.kube/config" ;;
+            prod) echo "${{ secrets.KUBECONFIG_PROD }}" | base64 -d > "$HOME/.kube/config" ;;
+          esac
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Verify cluster connectivity
+        run: kubectl cluster-info --request-timeout=10s
+
+      - name: Show diff before deploy
+        run: |
+          kubectl diff \
+            -f - <<EOF || true
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${{ env.APP_NAME }}
+            namespace: ${{ env.NAMESPACE }}
+          spec:
+            template:
+              spec:
+                containers:
+                - name: ${{ env.APP_NAME }}
+                  image: ${{ env.FULL_IMAGE }}
+          EOF
+        continue-on-error: true
+
+      - name: Update image
+        id: rollout
+        run: |
+          kubectl set image deployment/"${{ env.APP_NAME }}" \
+            "${{ env.APP_NAME }}"="${{ env.FULL_IMAGE }}" \
+            -n "${{ env.NAMESPACE }}"
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/"${{ env.APP_NAME }}" \
+            -n "${{ env.NAMESPACE }}" \
+            --timeout=5m
+
+      - name: Show pod status
+        run: |
+          echo "=== Pods in ${{ env.NAMESPACE }} ==="
+          kubectl get pods -n "${{ env.NAMESPACE }}" -o wide
+
+          echo ""
+          echo "=== Warning events ==="
+          kubectl get events -n "${{ env.NAMESPACE }}" \
+            --sort-by='.lastTimestamp' \
+            --field-selector type=Warning \
+            | tail -20 || true
+
+      - name: Rollback on failure
+        if: failure() && steps.rollout.outcome == 'success'
+        run: |
+          echo "Deploy failed — rolling back to previous version..."
+          kubectl rollout undo deployment/"${{ env.APP_NAME }}" \
+            -n "${{ env.NAMESPACE }}"
+
+          kubectl rollout status deployment/"${{ env.APP_NAME }}" \
+            -n "${{ env.NAMESPACE }}" \
+            --timeout=3m
+
+          echo "Rollback complete. Current pods:"
+          kubectl get pods -n "${{ env.NAMESPACE }}" -o wide
+
+      # Always wipe the kubeconfig — never leave credentials in the runner workspace
+      - name: Clean up kubeconfig
+        if: always()
+        run: rm -f "$HOME/.kube/config"
