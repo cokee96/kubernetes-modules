@@ -13,10 +13,10 @@ spec:
   sources:
     - repoURL: https://github.com/cokee96/kubernetes-modules
       targetRevision: HEAD
-      path: rollouts/canary
+      path: progressive-delivery/rollouts/canary
     - repoURL: https://github.com/cokee96/kubernetes-modules
       targetRevision: HEAD
-      path: analysis-templates
+      path: progressive-delivery/analysis-templates
 
   destination:
     server: https://kubernetes.default.svc

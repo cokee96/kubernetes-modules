@@ -17,8 +17,8 @@ spec:
       helm:
         releaseName: argo-rollouts
         valueFiles:
-          - $values/helm-values/argo-rollouts/base.yaml
-          - $values/helm-values/argo-rollouts/prod.yaml
+          - $values/progressive-delivery/helm-values/argo-rollouts/base.yaml
+          - $values/progressive-delivery/helm-values/argo-rollouts/dev.yaml   # change to pre.yaml / prod.yaml per environment
     - repoURL: https://github.com/cokee96/kubernetes-modules
       targetRevision: HEAD
       ref: values

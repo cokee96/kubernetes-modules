@@ -18,7 +18,8 @@ spec:
     spec:
       containers:
         - name: app
-          image: ghcr.io/cokee96/progressive-delivery:latest
+          image: progressive-delivery:1.0.0
+          imagePullPolicy: Never
           ports:
             - containerPort: 8080
           env:
