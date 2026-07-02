@@ -1,0 +1,74 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-canary
+  namespace: apps
+  labels:
+    app: demo-canary
+    app.kubernetes.io/part-of: progressive-delivery
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: demo-canary
+  template:
+    metadata:
+      labels:
+        app: demo-canary
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/cokee96/progressive-delivery:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_COLOR
+              value: blue
+            - name: APP_VERSION
+              value: "1.0.0"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+  strategy:
+    canary:
+      stableService: demo-canary-stable
+      canaryService: demo-canary-canary
+      trafficRouting:
+        nginx:
+          stableIngress: demo-canary
+      steps:
+        - setWeight: 20
+        - pause:
+            duration: 60s
+        - analysis:
+            templates:
+              - templateName: error-rate
+              - templateName: latency-p99
+            args:
+              - name: service
+                value: demo-canary
+        - setWeight: 50
+        - pause:
+            duration: 60s
+        - setWeight: 80
+        - pause:
+            duration: 30s
+      autoPromotionEnabled: false
+      maxSurge: "25%"
+      maxUnavailable: 0

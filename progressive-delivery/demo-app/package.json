@@ -1,0 +1,17 @@
+{
+  "name": "progressive-delivery-demo",
+  "version": "1.0.0",
+  "description": "Demo app for progressive delivery with Argo Rollouts",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "progressive-delivery",
+    "argo-rollouts",
+    "canary",
+    "bluegreen"
+  ],
+  "author": "cokee96",
+  "license": "MIT"
+}

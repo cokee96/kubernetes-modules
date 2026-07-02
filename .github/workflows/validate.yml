@@ -55,3 +55,40 @@ jobs:
           tflint --init
           tflint
         working-directory: ${{ matrix.module }}
+
+  progressive-delivery-validate:
+    name: Validate progressive-delivery manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Add Helm repo (Argo)
+        run: |
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+      - name: Helm lint argo-rollouts
+        run: |
+          helm lint argo/argo-rollouts \
+            --values progressive-delivery/helm-values/argo-rollouts/base.yaml \
+            --values progressive-delivery/helm-values/argo-rollouts/dev.yaml
+
+      - name: Install kubeconform
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin
+
+      - name: Validate manifests
+        run: |
+          kubeconform \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -summary \
+            progressive-delivery/rollouts/**/*.yaml \
+            progressive-delivery/analysis-templates/*.yaml \
+            progressive-delivery/argocd/apps/*.yaml \
+            progressive-delivery/argocd/projects/*.yaml

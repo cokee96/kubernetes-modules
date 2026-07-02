@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-bluegreen-active
+  namespace: apps
+  labels:
+    app: demo-bluegreen
+    role: active
+spec:
+  selector:
+    app: demo-bluegreen
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-bluegreen-preview
+  namespace: apps
+  labels:
+    app: demo-bluegreen
+    role: preview
+spec:
+  selector:
+    app: demo-bluegreen
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP

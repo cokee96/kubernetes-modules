@@ -1,0 +1,35 @@
+# Argo Rollouts Helm chart base values
+# Chart: argo/argo-rollouts version 2.37.7
+
+installCRDs: true
+keepCRDs: true
+clusterInstall: true
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        release: kube-prometheus-stack
+
+dashboard:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 3100
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

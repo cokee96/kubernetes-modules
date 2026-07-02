@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: delivery
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: progressive-delivery
+spec:
+  description: Progressive delivery project — Argo Rollouts canary and blue/green deployments
+
+  sourceRepos:
+    - https://github.com/cokee96/kubernetes-modules
+    - https://argoproj.github.io/argo-helm
+
+  destinations:
+    - namespace: argo-rollouts
+      server: https://kubernetes.default.svc
+    - namespace: apps
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  orphanedResources:
+    warn: false

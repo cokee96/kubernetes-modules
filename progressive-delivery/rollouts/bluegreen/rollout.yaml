@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-bluegreen
+  namespace: apps
+  labels:
+    app: demo-bluegreen
+    app.kubernetes.io/part-of: progressive-delivery
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: demo-bluegreen
+  template:
+    metadata:
+      labels:
+        app: demo-bluegreen
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/cokee96/progressive-delivery:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: APP_COLOR
+              value: blue
+            - name: APP_VERSION
+              value: "1.0.0"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  strategy:
+    blueGreen:
+      activeService: demo-bluegreen-active
+      previewService: demo-bluegreen-preview
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 30
+      prePromotionAnalysis:
+        templates:
+          - templateName: success-rate
+        args:
+          - name: service
+            value: demo-bluegreen-preview
+      postPromotionAnalysis:
+        templates:
+          - templateName: error-rate
+        args:
+          - name: service
+            value: demo-bluegreen-active

@@ -1,0 +1,23 @@
+# Production environment overrides — HA, full resources
+controller:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+dashboard:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

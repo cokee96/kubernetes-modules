@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-bluegreen
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: progressive-delivery
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: delivery
+
+  sources:
+    - repoURL: https://github.com/cokee96/kubernetes-modules
+      targetRevision: HEAD
+      path: rollouts/bluegreen
+    - repoURL: https://github.com/cokee96/kubernetes-modules
+      targetRevision: HEAD
+      path: analysis-templates
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: apps
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
