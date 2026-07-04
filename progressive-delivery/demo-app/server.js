@@ -6,7 +6,7 @@ const os = require('os');
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const APP_VERSION = process.env.APP_VERSION || '1.0.0';
 const APP_COLOR = process.env.APP_COLOR || 'blue';
-const SERVICE_NAME = 'progressive-delivery-demo';
+const SERVICE_NAME = process.env.SERVICE_NAME || 'progressive-delivery-demo';
 
 console.log(`Starting ${SERVICE_NAME} version=${APP_VERSION} color=${APP_COLOR} pid=${process.pid}`);
 

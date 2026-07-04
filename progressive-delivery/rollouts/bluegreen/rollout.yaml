@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: progressive-delivery:1.0.0
+          image: progressive-delivery:1.1.0
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
@@ -28,6 +28,8 @@ spec:
               value: blue
             - name: APP_VERSION
               value: "1.0.0"
+            - name: SERVICE_NAME
+              value: demo-bluegreen
           resources:
             requests:
               cpu: 50m
@@ -52,10 +54,10 @@ spec:
           - templateName: success-rate
         args:
           - name: service
-            value: demo-bluegreen-preview
+            value: demo-bluegreen
       postPromotionAnalysis:
         templates:
           - templateName: error-rate
         args:
           - name: service
-            value: demo-bluegreen-active
+            value: demo-bluegreen
