@@ -10,8 +10,10 @@ spec:
     - name: service
   metrics:
     - name: latency-p99
+      initialDelay: 45s
       interval: 30s
       count: 3
+      consecutiveErrorLimit: 8
       successCondition: result[0] <= 1.0
       failureLimit: 1
       provider:

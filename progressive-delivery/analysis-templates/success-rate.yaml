@@ -10,8 +10,10 @@ spec:
     - name: service
   metrics:
     - name: success-rate
+      initialDelay: 45s
       interval: 30s
       count: 5
+      consecutiveErrorLimit: 8
       successCondition: result[0] >= 0.95
       failureLimit: 2
       provider:
