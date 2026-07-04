@@ -70,6 +70,5 @@ spec:
         - setWeight: 80
         - pause:
             duration: 30s
-      autoPromotionEnabled: false
       maxSurge: "25%"
       maxUnavailable: 0
